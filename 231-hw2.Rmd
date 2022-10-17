@@ -1,0 +1,229 @@
+---
+title: "Homework 2"
+author: "PSTAT 131/231"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+```
+
+## Linear Regression
+
+For this lab, we will be working with a data set from the UCI (University of California, Irvine) Machine Learning repository ([see website here](http://archive.ics.uci.edu/ml/datasets/Abalone)). The full data set consists of $4,177$ observations of abalone in Tasmania. (Fun fact: [Tasmania](https://en.wikipedia.org/wiki/Tasmania "Tasmania") supplies about $25\%$ of the yearly world abalone harvest.)
+
+![*Fig 1. Inside of an abalone shell.*](https://cdn.shopify.com/s/files/1/1198/8002/products/1d89434927bffb6fd1786c19c2d921fb_2000x_652a2391-5a0a-4f10-966c-f759dc08635c_1024x1024.jpg?v=1582320404){width="152"}
+
+The age of an abalone is typically determined by cutting the shell open and counting the number of rings with a microscope. The purpose of this data set is to determine whether abalone age (**number of rings + 1.5**) can be accurately predicted using other, easier-to-obtain information about the abalone.
+
+The full abalone data set is located in the `\data` subdirectory. Read it into *R* using `read_csv()`. Take a moment to read through the codebook (`abalone_codebook.txt`) and familiarize yourself with the variable definitions.
+
+Make sure you load the `tidyverse` and `tidymodels`!
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(ggthemes)
+tidymodels_prefer(quiet = FALSE)
+abalone <- read_csv('abalone.csv')
+View(abalone)
+```
+### Question 1
+
+Your goal is to predict abalone age, which is calculated as the number of rings plus 1.5. Notice there currently is no `age` variable in the data set. Add `age` to the data set.
+```{r}
+abalone <- abalone %>%
+  mutate(age=rings+1.5)
+view(abalone)
+```
+Assess and describe the distribution of `age`.
+```{r}
+abalone %>%
+  ggplot(aes(x = age)) +
+  geom_histogram(binwidth=1) +
+  xlab('abalone age')
+```
+
+From the histogram of the abalone ages, we can find that the distribution looks like normal but there's a right skewed pattern of it. The peak of the age is at 10 years, and most abalones' ages are between 7 and 15.
+
+### Question 2
+
+Split the abalone data into a training set and a testing set. Use stratified sampling. You should decide on appropriate percentages for splitting the data.
+*Remember that you'll need to set a seed at the beginning of the document to reproduce your results.*
+```{r}
+#split the data using example in lab2
+set.seed(1)
+abalone_split <- initial_split(abalone, prop = 0.80,
+                                strata = age)
+abalone_train <- training(abalone_split)
+abalone_test <- testing(abalone_split)
+```
+### Question 3
+Using the **training** data, create a recipe predicting the outcome variable, `age`, with all other predictor variables. Note that you should not include `rings` to predict `age`. Explain why you shouldn't use `rings` to predict `age`.
+
+Steps for your recipe:
+
+1.  dummy code any categorical predictors
+
+2.  create interactions between
+
+    -   `type` and `shucked_weight`,
+    -   `longest_shell` and `diameter`,
+    -   `shucked_weight` and `shell_weight`
+
+3.  center all predictors, and
+
+4.  scale all predictors.
+
+You'll need to investigate the `tidymodels` documentation to find the appropriate step functions to use.
+
+I used step functions found under the website here: [recipes](https://recipes.tidymodels.org/reference/index.html#step-functions-filters)
+```{r}
+abalone_recipe <-
+  recipe(age ~ ., data = abalone_train) %>%
+  step_rm(rings) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_interact(terms = ~ starts_with('type'):shucked_weight + longest_shell:diameter + shucked_weight:shell_weight) %>%
+  step_center(all_predictors()) %>%
+  step_normalize(all_predictors())
+```
+
+### Question 4
+
+Create and store a linear regression object using the `"lm"` engine.
+```{r}
+#this is also from lab 2
+abalone_model <- linear_reg() %>% 
+  set_engine("lm")
+```
+### Question 5
+
+Now:
+
+1.  set up an empty workflow,
+2.  add the model you created in Question 4, and
+3.  add the recipe that you created in Question 3.
+```{r}
+abalone_wflow <- workflow() %>% 
+  add_model(abalone_model) %>% 
+  add_recipe(abalone_recipe)
+```
+### Question 6
+
+Use your `fit()` object to predict the age of a hypothetical female abalone with longest_shell = 0.50, diameter = 0.10, height = 0.30, whole_weight = 4, shucked_weight = 1, viscera_weight = 2, shell_weight = 1.
+```{r}
+#We first fit the linear model to the training set
+abalone_lm_fit <- fit(abalone_wflow, abalone_train)
+hypothetical_abalone_predict <- predict(abalone_lm_fit, new_data = tibble(type = 'F',longest_shell = 0.50, diameter = 0.10, height = 0.30, whole_weight = 4, shucked_weight = 1, viscera_weight = 2, shell_weight = 1 , rings = 1))
+#the input of 'rings' is required for this model, but we can just give a random numerical value since it will be dropped in the model
+hypothetical_abalone_predict
+```
+
+From the model we built, we predict the age of the given hypothetical abalone is 23.83 years.
+### Question 7
+
+Now you want to assess your model's performance. To do this, use the `yardstick` package:
+
+1.  Create a metric set that includes *R^2^*, RMSE (root mean squared error), and MAE (mean absolute error).
+2.  Use `predict()` and `bind_cols()` to create a tibble of your model's predicted values from the **training data** along with the actual observed ages (these are needed to assess your model's performance).
+3.  Finally, apply your metric set to the tibble, report the results, and interpret the *R^2^* value.
+```{r}
+library(yardstick)
+abalone_metrics <- metric_set(rmse, rsq, mae) #Create a metric set
+abalone_train_res <- predict(abalone_lm_fit, new_data = abalone_train %>% select(-age))
+abalone_train_res <- bind_cols(abalone_train_res, abalone_train %>% select(age))
+abalone_metrics(abalone_train_res, truth = age, 
+                estimate = .pred)
+```
+
+From review of PSTAT 126, *R^2^* is a measure of proportion of the variability in Y that can be explained using X. Here we have that for our model, the *R^2^* value is 56.34%, meaning 56.34% of the variability in abalones' age can be explained by our model. 56.34% is not a high *R^2^* value here, so it means that our model performed probably okay but not super well to our data. We can look at the plot of predicted values VS actual values below:
+```{r}
+abalone_train_res %>% 
+  ggplot(aes(x = .pred, y = age)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(lty = 2) + 
+  theme_bw() +
+  coord_obs_pred()
+```
+
+We can see that indeed, our model is not perfect here, since the dots don't seem to form a good straight line. It's probably due to a high variance of abalone age or the relationship between age and the predictors is actually not linear.
+
+### Required for 231 Students
+
+In lecture, we presented the general bias-variance tradeoff, which takes the form:
+
+$$
+E[(y_0 - \hat{f}(x_0))^2]=Var(\hat{f}(x_0))+[Bias(\hat{f}(x_0))]^2+Var(\epsilon)
+$$
+
+where the underlying model $Y=f(X)+\epsilon$ satisfies the following:
+
+- $\epsilon$ is a zero-mean random noise term and $X$ is non-random (all randomness in $Y$ comes from $\epsilon$);
+- $(x_0, y_0)$ represents a test observation, independent of the training set, drawn from the same model;
+- $\hat{f}(.)$ is the estimate of $f$ obtained from the training set.
+
+#### Question 8
+
+Which term(s) in the bias-variance tradeoff above represent the reproducible error? Which term(s) represent the irreducible error?
+
+The terms $Var(\hat{f}(x_0))$ and $[Bias(\hat{f}(x_0))]^2$ represent the reproducible error.\
+The term $Var(\epsilon)$ represents the irreducible error.
+
+#### Question 9
+
+Using the bias-variance tradeoff above, demonstrate that the expected test error is always at least as large as the irreducible error.
+
+By the bias-variance decomposition above, our expected test error consists of three terms $Var(\hat{f}(x_0))$ , $[Bias(\hat{f}(x_0))]^2$ and $Var(\epsilon)$. It's obvious here that all three terms are non-negative. Also Question 8 above specifies the reproducible and irreducible error. If we want to minimize the expected test error $E[(y_0 - \hat{f}(x_0))^2]$, we can reduce the reproducible errors, $Var(\hat{f}(x_0))$ and $[Bias(\hat{f}(x_0))]^2$, down to 0. However, this still give us that 
+$$E[(y_0 - \hat{f}(x_0))^2]=0+0+Var(\epsilon)=Var(\epsilon)$$
+
+Here, $\epsilon$ is a zero-mean random noise term and $Var(\epsilon)$ is irreducible error. Thus, we have no control of the value of $Var(\epsilon)$, we can't reduce it any more. From the calculation above, we showed that after minimizing all possible terms,  the expected test error$E[(y_0 - \hat{f}(x_0))^2]$ is always at least as large as the irreducible error$Var(\epsilon)$.
+
+#### Question 10
+
+Prove the bias-variance tradeoff.
+
+Hints:
+
+- use the definition of $Bias(\hat{f}(x_0))=E[\hat{f}(x_0)]-f(x_0)$;
+- reorganize terms in the expected test error by adding and subtracting $E[\hat{f}(x_0)]$
+
+Proof:
+
+We know that our expected test MSE is $E[(y_0 - \hat{f}(x_0))^2]$ and $y=f(x)+\epsilon$, where f(x) is non-random and $\epsilon$ is zero-mean noise.
+
+So we can write the expected test MSE as below and rearrange:
+$$E[(y_0 - \hat{f}(x_0))^2]=E[(f(x_0)+\epsilon - \hat{f}(x_0))^2]=E[((f(x_0) - \hat{f}(x_0))+\epsilon)^2]$$
+Then we can expand it as:
+$$E[((f(x_0) - \hat{f}(x_0))+\epsilon)^2]=E[(f(x_0) - \hat{f}(x_0))^2+2\epsilon(f(x_0) - \hat{f}(x_0))+\epsilon^2]$$
+Using linearity of expectation, we break it down to three terms:
+$$E[(y_0 - \hat{f}(x_0))^2]=E[(f(x_0) - \hat{f}(x_0))^2]+E[2\epsilon(f(x_0) - \hat{f}(x_0))]+E[\epsilon^2]$$
+The second term $E[2\epsilon(f(x) - \hat{f}(x_0))]=0$ here, since $\epsilon$ is independent of everything else and its expectation is zero.
+
+The third term can be wrriten as the variance since $E[\epsilon^2]=Var(\epsilon)+(E[\epsilon])^2=Var(\epsilon)+0^2=Var(\epsilon)$.
+
+Then we can reduce the expression of expected test MSE to:
+$$E[(y_0 - \hat{f}(x_0))^2]=E[(f(x_0) - \hat{f}(x_0))^2]+Var(\epsilon)$$
+Using the hint, we add and subtract $E[\hat{f}(x_0)]$ in the first term and rearrange as:
+$$E[(y_0 - \hat{f}(x_0))^2]=E[((f(x_0)-E[\hat{f}(x_0)])+(E[\hat{f}(x_0)] - \hat{f}(x_0)))^2]+Var(\epsilon)$$
+We can expand this expression and break down the expectation to:
+$$E[(y_0 - \hat{f}(x_0))^2]=E[(f(x_0)-E[\hat{f}(x_0)])^2]+E[(E[\hat{f}(x_0)] - \hat{f}(x_0))^2]+2E[(f(x_0)-E[\hat{f}(x_0)])\cdot(E[\hat{f}(x_0)] - \hat{f}(x_0))]+Var(\epsilon)$$
+This equation has four terms:
+
+The first term is the bias squared, since $f(x_0)$ and $E[\hat{f}(x_0)]$ are constants then we can remove the expectation, also our definition give us that $Bias(\hat{f}(x_0))=E[\hat{f}(x_0)]-f(x_0)$.
+
+The second term is the variance, because definition gives us that $Var(\hat{f}(x_0))=E[(E[\hat{f}(x_0)] - \hat{f}(x_0))^2]$.
+
+The third term reduces to zero since $\hat{f}(x_0)$ is a constant $\rightarrow$ $E[\hat{f}(x_0)]=\hat{f}(x_0)$
+$\rightarrow$ $E[\hat{f}(x_0)] - \hat{f}(x_0)=0$.
+
+The fourth term is variance of $\epsilon$.
+
+After this decomposition, we can write the expected test MSE as:
+$$E[(y_0 - \hat{f}(x_0))^2]=Bias(\hat{f}(x_0))^2+Var(\hat{f}(x_0))+Var(\epsilon)$$
+Hence we proved the bias-variance tradeoff.
